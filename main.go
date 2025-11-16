@@ -305,7 +305,7 @@ func getNextCandidate(currentUserID int64) (*User, error) {
 	          AND u.id NOT IN (
 	              SELECT to_user_id FROM likes WHERE from_user_id = ?
 	          )
-	        ORDER BY u.id DESC
+	        ORDER BY RANDOM()
 	        LIMIT 1`
 		row2 := db.QueryRow(sqlAll, append([]any{}, append(argsBase, currentUserID)...)...)
 		err2 := row2.Scan(&u.ID, &u.TgID, &u.Username, &u.Name, &u.Age, &u.Bio, &u.PhotoFileID, &u.Gender, &u.Interest, &u.CreatedAt)
