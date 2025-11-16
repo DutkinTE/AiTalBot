@@ -252,7 +252,8 @@ func getNextCandidate(currentUserID int64) (*User, error) {
     // Fetch current user's interest preference and gender
     var interest sql.NullString
     var myGender sql.NullString
-    err := db.QueryRow(`SELECT interest, gender FROM users WHERE id = ?`, currentUserID).Scan(&interest, &myGender)
+    err := db.QueryRow(`SELECT interest, gender FROM users WHERE id = ?`, currentUserID).
+        Scan(&interest, &myGender)
     if err == sql.ErrNoRows {
         return nil, nil
     }
@@ -273,21 +274,20 @@ func getNextCandidate(currentUserID int64) (*User, error) {
     // Candidate must be interested in my gender or be 'any'
     myGenderStr := strings.ToLower(strings.TrimSpace(myGender.String))
     baseSQL += " AND (u.interest = 'any' OR u.interest = ?)"
-
     argsBase := []any{currentUserID, myGenderStr}
 
-	intStr := strings.ToLower(strings.TrimSpace(interest.String))
-	if intStr == "male" {
-		baseSQL += " AND u.gender = 'male'"
-	} else if intStr == "female" {
-		baseSQL += " AND u.gender = 'female'"
-		// "any" – без фильтра
-	}
+    intStr := strings.ToLower(strings.TrimSpace(interest.String))
+    if intStr == "male" {
+        baseSQL += " AND u.gender = 'male'"
+    } else if intStr == "female" {
+        baseSQL += " AND u.gender = 'female'"
+        // "any" – без фильтра
+    }
 
-	// Сначала ищем НЕпросмотренные анкеты (фильтр по лайкам/дизлайкам)
+    // 1) Ищем непосмотренные (не лайкнутые и не дизлайкнутые)
     sqlUnseen := baseSQL + `
           AND u.id NOT IN (
-              SELECT to_user_id FROM likes WHERE from_user_id = ?
+              SELECT to_user_id FROM likes    WHERE from_user_id = ?
               UNION
               SELECT to_user_id FROM dislikes WHERE from_user_id = ?
           )
@@ -295,32 +295,32 @@ func getNextCandidate(currentUserID int64) (*User, error) {
         LIMIT 1`
     argsUnseen := append(append([]any{}, argsBase...), currentUserID, currentUserID)
 
-	var u User
-	row := db.QueryRow(sqlUnseen, argsUnseen...)
-	err = row.Scan(&u.ID, &u.TgID, &u.Username, &u.Name, &u.Age, &u.Bio, &u.PhotoFileID, &u.Gender, &u.Interest, &u.CreatedAt)
-	if err == sql.ErrNoRows {
-		// Все просмотрены — начинаем заново, НО исключаем уже лайкнутых навсегда,
-		// при этом ранее пропущенные (dislikes) могут появиться снова.
-		sqlAll := baseSQL + `
-	          AND u.id NOT IN (
-	              SELECT to_user_id FROM likes WHERE from_user_id = ?
-	          )
-	        ORDER BY RANDOM()
-	        LIMIT 1`
-		row2 := db.QueryRow(sqlAll, append([]any{}, append(argsBase, currentUserID)...)...)
-		err2 := row2.Scan(&u.ID, &u.TgID, &u.Username, &u.Name, &u.Age, &u.Bio, &u.PhotoFileID, &u.Gender, &u.Interest, &u.CreatedAt)
-		if err2 == sql.ErrNoRows {
-			return nil, nil
-		}
-		if err2 != nil {
-			return nil, err2
-		}
-		return &u, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &u, nil
+    var u User
+    row := db.QueryRow(sqlUnseen, argsUnseen...)
+    err = row.Scan(&u.ID, &u.TgID, &u.Username, &u.Name, &u.Age, &u.Bio, &u.PhotoFileID, &u.Gender, &u.Interest, &u.CreatedAt)
+    if err == sql.ErrNoRows {
+        // 2) Все анкеты текущего прохода просмотрены.
+        // Удаляем дизлайки (просмотренные), лайки НЕ трогаем.
+        if _, errDel := db.Exec(`DELETE FROM dislikes WHERE from_user_id = ?`, currentUserID); errDel != nil {
+            return nil, errDel
+        }
+
+        // 3) Пробуем ещё раз тот же запрос (теперь "просмотренные" очищены)
+        row2 := db.QueryRow(sqlUnseen, argsUnseen...)
+        err2 := row2.Scan(&u.ID, &u.TgID, &u.Username, &u.Name, &u.Age, &u.Bio, &u.PhotoFileID, &u.Gender, &u.Interest, &u.CreatedAt)
+        if err2 == sql.ErrNoRows {
+            // вообще никого нет в сегменте
+            return nil, nil
+        }
+        if err2 != nil {
+            return nil, err2
+        }
+        return &u, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+    return &u, nil
 }
 
 // addLike возвращает (isMatch, otherUser, error)
@@ -617,10 +617,10 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
         msgOut.ReplyMarkup = kb
         if _, err := bot.Send(msgOut); err != nil { log.Println("send end menu error:", err) }
         return
-    case "Смотреть анкеты.":
+    case "Смотреть анкеты":
         handleNext(bot, msg)
         return
-    case "Моя анкета.":
+    case "Моя анкета":
         handleMe(bot, msg)
         return
     case "Я больше не хочу никого искать":
